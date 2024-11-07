@@ -21,6 +21,15 @@ const App = () => {
     loadPolicies();
   }, []);
 
+  const getStatusText = (status) => {
+    const statusMap = {
+      0: 'Active',
+      1: 'Claimed',
+      2: 'Expired'
+    };
+    return statusMap[status] || 'Unknown';
+  };
+  
   const loadAccount = async () => {
     const accounts = await web3.eth.getAccounts();
     setAccount(accounts[0]);
@@ -59,24 +68,83 @@ const App = () => {
   };
   
   
+  // const handleCreatePolicy = async () => {
+  //   try {
+  //     setLoading(true);
+  //     const accounts = await web3.eth.getAccounts();
+  //     const insured = insuredAddress || accounts[0]; // Use provided insured address or default to the sender's address
+
+  //     const result = await insuranceContract.methods
+  //       .createPolicy(
+  //         insured, // Pass the insured address
+  //         policyType, 
+  //         web3.utils.toWei(premium, 'ether'), 
+  //         web3.utils.toWei(payoutAmount, 'ether'), 
+  //         claimTriggerTime
+  //       )
+  //       .send({ 
+  //         from: accounts[0],
+  //         value: web3.utils.toWei(premium, 'ether'), // Send the premium amount as msg.value
+  //         gas: estimatedGas || 3000000 
+  //       });
+
+  //     console.log('Policy created successfully:', result);
+  //     loadPolicies();
+  //     setLoading(false);
+  //   } catch (error) {
+  //     setLoading(false);
+  //     console.error("Error creating policy:", error);
+  //     alert('Error creating policy: ' + error.message);
+  //   }
+  // };
+
   const handleCreatePolicy = async () => {
     try {
       setLoading(true);
       const accounts = await web3.eth.getAccounts();
-      const insured = insuredAddress || accounts[0]; // Use provided insured address or default to the sender's address
-
+      const insured = insuredAddress || accounts[0]; 
+  
+      // Define the gas estimation inside a try-catch block
+      let estimatedGas;
+      try {
+        estimatedGas = await insuranceContract.methods
+          .createPolicy(
+            insured, 
+            policyType, 
+            web3.utils.toWei(premium, 'ether'), 
+            web3.utils.toWei(payoutAmount, 'ether'), 
+            claimTriggerTime
+          )
+          .estimateGas({ 
+            from: accounts[0], 
+            value: web3.utils.toWei(premium, 'ether') 
+          });
+  
+        console.log("Estimated gas:", estimatedGas);
+      } catch (gasError) {
+        console.error("Gas estimation failed:", gasError);
+        alert('Gas estimation failed: ' + gasError.message);
+        setLoading(false);
+        return; // Exit if gas estimation fails
+      }
+  
+      // Proceed with sending the transaction if gas estimation succeeds
       const result = await insuranceContract.methods
         .createPolicy(
-          insured, // Pass the insured address
+          insured, 
           policyType, 
           web3.utils.toWei(premium, 'ether'), 
           web3.utils.toWei(payoutAmount, 'ether'), 
           claimTriggerTime
         )
-        .send({ from: accounts[0] });
-
+        .send({ 
+          from: accounts[0],
+          value: web3.utils.toWei(premium, 'ether'),  // Ensure premium is sent as Ether
+          gas: estimatedGas || 3000000  // Use the estimated gas
+        });
+  
       console.log('Policy created successfully:', result);
-      loadPolicies();
+      loadPolicies(); // Reload policies after successful creation
       setLoading(false);
     } catch (error) {
       setLoading(false);
@@ -84,26 +152,60 @@ const App = () => {
       alert('Error creating policy: ' + error.message);
     }
   };
+  
 
   const handleProcessClaim = async (policyId) => {
     try {
       setLoading(true);
-      await insuranceContract.methods.processClaim(policyId).send({ from: account });
+  
+      // Fetch the policy details from the contract
+      const policy = await insuranceContract.methods.policies(policyId).call();
+      console.log('Processing policy:', policy);
+      const gasPrice = await web3.eth.getGasPrice();
+      console.log("Current Gas Price:", gasPrice);
+
+  
+      // Check if the claim trigger time has passed
+      if (Date.now() / 1000 < Number(policy.claimTriggerTime)) {
+        alert('Claim trigger time has not been reached yet.');
+        setLoading(false);
+        return;
+      }
+  
+      // Check the status of the policy
+      if (Number(policy.status) !== 0) { // 0 indicates 'Active'
+        alert('Policy is not active.');
+        setLoading(false);
+        return;
+      }
+          // Estimate gas for the transaction
+      const estimatedGas = await insuranceContract.methods.processClaim(policyId).estimateGas({ from: account });
+      console.log("Estimated Gas:", estimatedGas);
+
+      // Proceed with claim processing using the estimated gas limit
+      await insuranceContract.methods.processClaim(policyId).send({
+        from: account,
+        gas: estimatedGas, // Use estimated gas
+        gasPrice: web3.utils.toWei('50', 'gwei') // Set a custom gas price (50 gwei in this example)
+      });      
+
       loadPolicies();
       setLoading(false);
     } catch (error) {
       setLoading(false);
       console.error("Error processing claim:", error);
-      alert('Error processing claim: ' + error.message);
+      console.log('Error processing claim: ' + error.message);
     }
   };
+  
+  
 
   const formatDate = (timestamp) => {
     const date = new Date(timestamp * 1000);
     return date.toLocaleString();
   };
 
-  return (
+  return (  
     <div className="container">
       <h1>Decentralized Insurance Platform</h1>
       <div className="account-info">
@@ -170,19 +272,19 @@ const App = () => {
                   <td>{policy.policyType}</td>
                   <td>{web3.utils.fromWei(policy.premium, 'ether')}</td>
                   <td>{web3.utils.fromWei(policy.payoutAmount, 'ether')}</td>
-                  <td>{policy.status === '0' ? 'Active' : 'Claimed'}</td>
+                  <td>{getStatusText(Number(policy.status))}</td> {/* Use getStatusText here */}
                   <td>{formatDate(Number(policy.claimTriggerTime))}</td>
-                  <td>{policy.insured}</td> {/* Display Insured Address */}
+                  <td>{policy.insured}</td>
                   <td>
-                    {policy.status === 0 && (
-                      <button
-                        className="btn-claim"
-                        onClick={() => handleProcessClaim(index)}
-                        disabled={loading}
-                      >
-                        {loading ? 'Processing...' : 'Process Claim'}
-                      </button>
-                    )}
+                      {Number(policy.status) === 0 && (
+                        <button
+                          className="btn-claim"
+                          onClick={() => handleProcessClaim(index)}
+                          disabled={loading}
+                        >
+                          {loading ? 'Processing...' : 'Process Claim'}
+                        </button>
+                      )}
                   </td>
                 </tr>
               ))}
